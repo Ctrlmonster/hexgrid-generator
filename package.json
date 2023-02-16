@@ -1,0 +1,47 @@
+{
+  "name": "r3f-demo-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "vite --host",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.32.0",
+    "@react-three/fiber": "^8.8.2",
+    "@react-three/postprocessing": "^2.7.0",
+    "honeycomb-grid": "^4.0.1",
+    "leva": "^0.9.31",
+    "miniplex-react": "^0.4.2",
+    "ngraph.graph": "^20.0.1",
+    "ngraph.path": "^1.4.0",
+    "r3f-perf": "^7.1.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "shader-composer": "^0.4.5",
+    "threads": "^1.7.0",
+    "three": "^0.144.0",
+    "three-instanced-uniforms-mesh": "^0.47.0",
+    "three-mesh-bvh": "^0.5.21",
+    "three-stdlib": "^2.16.1",
+    "troika-three-utils": "^0.47.0",
+    "valtio": "^1.9.0",
+    "vfx-composer-r3f": "^0.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.17",
+    "@types/react-dom": "^18.0.6",
+    "@types/three": "^0.144.0",
+    "@types/workerpool": "^6.1.1",
+    "@vitejs/plugin-react": "^2.1.0",
+    "autoprefixer": "^10.4.12",
+    "postcss": "^8.4.16",
+    "sass": "^1.55.0",
+    "tailwindcss": "^3.1.8",
+    "typescript": "^4.6.4",
+    "vite": "^3.1.0"
+  }
+}
