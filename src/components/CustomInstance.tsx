@@ -29,11 +29,6 @@ extend({InstancedUniformsMesh});
 // to make position a Vec4 instead of a Vec3. Need to figure out how that can work
 // with creating derived materials though
 type Points = [x: number, y: number, z: number, w: number][];
-const piThird = Math.PI / 3;
-// inside our shader we need 0 to be exactly 0, so we round to 10 decimal places
-const precision = 10000000000;
-const round = (n: number) => Math.round(n * precision) / precision;
-
 
 const genVerticesFromPoints = (points: Points) => {
   return [
@@ -122,7 +117,10 @@ export function createCellInstances(cellsByHex: CornersByCenterByHex, scene: Sce
       // create offset vectors for the corners (two Vec3 for six corners)
       heightOffsets.push(createOffsetVectors(cornerIntersections));
       // --------------------------------------------------------
-      const id = idByCenterIntersection.get(centerIntersection)!;
+      const id = idByCenterIntersection.get(centerIntersection);
+      if (id == undefined) {
+        throw 'no id for center intersection';
+      }
       cellIds.push(id);
       instanceIndexByCellId[id] = idx;
       cellColorValues.push(0xffffff);
@@ -138,7 +136,6 @@ export function createCellInstances(cellsByHex: CornersByCenterByHex, scene: Sce
   mesh.instanceMatrix.set(instanceMatrices);
   mesh.userData.cellIds = cellIds; // this way we can use the idx to get the cell id
   mesh.userData.instanceIndexByCellId = instanceIndexByCellId; // this way we can use the cell id to get the instance idx
-
 
   // set height uniforms for each instance
   heightOffsets.forEach((heightOffsets, i) => {
@@ -177,16 +174,16 @@ function createHexagonMaterial() {
       if (position.x < 0.0) {
         // north-west
         if (position.z > 0.0) {
-          position.y += offsetWest.x;  
+          position.y += offsetWest[0];  
         }
         else {
           // west
           if (position.z == 0.0) {
-            position.y += offsetWest.y;
+            position.y += offsetWest[1];
           }
           // south-west 
           else {
-            position.y += offsetWest.z;
+            position.y += offsetWest[2];
           }
         }
       } 
@@ -195,16 +192,16 @@ function createHexagonMaterial() {
       else {
         // north-east
         if (position.z > 0.0) {
-          position.y += offsetEast.x;
+          position.y += offsetEast[0];
         }
         else {
           // east
           if (position.z == 0.0) {
-            position.y += offsetEast.y;
+            position.y += offsetEast[1];
           }
           // south-east
           else {
-            position.y += offsetEast.z;
+            position.y += offsetEast[2];
           }
         }
       }   

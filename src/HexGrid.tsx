@@ -20,15 +20,17 @@ import {CELL_COLOR, CELL_COLOR_HIGHLIGHTED, sharedCellDefaultMaterial, sharedCel
 /*
 
 TODO: Ordered list of things to do
-  * Stacked Cell Parameter is not working correctly (?)
-  * add something like first hit only into the algo
-  * Prefer higher corner values (similar to stacked center intersections)
-  * Make number of obstacle intersections check per cell a parameter (where N=1 means only check cell center)
+  Must have:
+  * Fix holes in generated Grid (solved?)
+  * Remove cell islands (fix raycasting first to debug properly)
+  * Smooth cell normals
+  * Tweak obstacle bombing parameters (when a cell counts as blocked)
+  -------------------------------------------
+  Nice to have:
+  * Add Button for switching between instances/real meshes
   * display size of grid in stats
-  * add all configs to leva
   * add 2d grid version to the creator plane
   * add info about number of geometries in stats
-
  */
 
 // ----------------------------------------------
@@ -39,10 +41,10 @@ TODO: Ordered list of things to do
 
 // grid creation parameters
 const RAY_CAST_START_HEIGHT = 30;
-const GRID_COLS = 10;
-const GRID_ROWS = 10;
-const OFFSET_X = -17.9;
-const OFFSET_Z = -0.3781;
+const GRID_COLS = 30;
+const GRID_ROWS = 30;
+const OFFSET_X = -30;
+const OFFSET_Z = -30;
 const FIRST_HIT_ONLY = false;
 const Z_FIGHT_OFFSET = .01;
 const CELL_RADIUS = 1.5;
@@ -54,9 +56,12 @@ const RAY_CAST_Y_DIRECTION = -1;
 
 const INNER_CELL_RADIUS_FACTOR = 0.88;
 const CENTER_ADAPTION_OBSTACLE_FACTOR = 0.63;
+const NEIGHBOR_STRIP_SIZE_FACTOR = 0.5;
 const MERGE_STACKED_CORNERS = true;
 const PRINT_GEOMETRY_HOLE_WARNINGS = false;
-
+const CHECK_FOR_OBSTACLES = true;
+const CHECK_FOR_OBSTACLES_BETWEEN_CELLS = true;
+const NO_CELL_ISLANDS = true;
 // new value, if hex corners have a smaller height diff than this value,
 // merge their positions (to the lower one)
 const MIN_HEIGHT_DIFF_STACKED_CORNERS = 1.5;
@@ -64,10 +69,8 @@ const MIN_HEIGHT_DIFF_STACKED_CORNERS = 1.5;
 // --------------------------------------------------------------------------
 const OBSTACLE_HEIGHT_CENTER = 1;
 const OBSTACLE_CENTER_RAY_START_HEIGHT = 2;
-const OBSTACLE_HEIGHT_NEIGHBOR = 1.1;
-const OBSTACLE_NEIGHBOR_RAY_START_HEIGHT = 2;
-
-
+const OBSTACLE_HEIGHT_NEIGHBOR = 1;
+const OBSTACLE_NEIGHBOR_RAY_START_HEIGHT = 1.5;
 // --------------------------------------------------------------------------
 
 // rendering parameters
@@ -78,7 +81,7 @@ const CELL_RENDER_OPACITY = 1;
 const DEBUG_NEIGHBOR_INTERSECTIONS = false;
 const DEBUG_CENTER_INTERSECTIONS = false;
 const DISPLAY_PATHFINDING = true;
-const CELL_GAP_FACTOR = 0.98;
+const CELL_GAP_FACTOR = 1;
 
 // --------------------------------------------------------------------------
 
@@ -118,9 +121,12 @@ export const heightMapConfig = proxy({
   zFightOffset: Z_FIGHT_OFFSET,
   cellGapFactor: CELL_GAP_FACTOR,
   cellOrientation: CELL_ORIENTATION,
+  noCellIslands: NO_CELL_ISLANDS,
   maxHeightCenterToCorner: MAX_HEIGHT_CENTER_TO_CORNERS,
   maxHeightNeighborToCenter: MAX_HEIGHT_NEIGHBOR_TO_CENTER,
   minHeightDiffStackedCells: MIN_HEIGHT_DIFF_STACKED_CELLS,
+  checkForObstacles: CHECK_FOR_OBSTACLES,
+  checkForObstaclesBetweenCells: CHECK_FOR_OBSTACLES_BETWEEN_CELLS,
   obstacleHeightCenter: OBSTACLE_HEIGHT_CENTER,
   obstacleCenterRayStartHeight: OBSTACLE_CENTER_RAY_START_HEIGHT,
   obstacleNeighborRayStartHeight: OBSTACLE_NEIGHBOR_RAY_START_HEIGHT,
@@ -128,6 +134,7 @@ export const heightMapConfig = proxy({
   innerCellRadiusFactor: INNER_CELL_RADIUS_FACTOR,
   printGeometryHoleWarnings: PRINT_GEOMETRY_HOLE_WARNINGS,
   centerAdaptionObstacleFactor: CENTER_ADAPTION_OBSTACLE_FACTOR,
+  neighborStripSizeFactor: NEIGHBOR_STRIP_SIZE_FACTOR,
   minHeightDiffStackedCorners: MIN_HEIGHT_DIFF_STACKED_CORNERS,
   mergeStackedCorners: MERGE_STACKED_CORNERS,
 });
@@ -206,98 +213,144 @@ export function CreatorPlane() {
 
 
   const ctrls: Partial<typeof heightMapConfig> = useControls("Grid Creation", {
-    firstHitOnly: {label: "1st Ray Hit Only", value: FIRST_HIT_ONLY, hint: "Set Raycaster.onlyFirstHit"},
-    zFightOffset: {
-      label: "Z-Fight Offset", value: Z_FIGHT_OFFSET,
-      hint: "Offset between cells and environment. Cells are offset along their normal by this value."
-    },
-    cellGapFactor: {
-      label: "Cell Gap Factor",
-      hint: "The factor by which the cell radius is multiplied to calculate the gap between cells. 1 means no Gap",
-      value: CELL_GAP_FACTOR, max: 1, min: 0.1
-    },
-    cellRadius: {label: "Cell Radius", value: CELL_RADIUS},
-    cellOrientation: {
-      label: "Hex Orientation", options: {flat: Orientation.FLAT, pointy: Orientation.POINTY},
-      hint: "The Hex Cell Orientation. Rotates the hex cells by 90°."
-    },
-    maxHeightCenterToCorner: {
-      label: "Cell Height Variance",
-      value: MAX_HEIGHT_CENTER_TO_CORNERS,
-      hint: "The maximum allowed height difference between a cell's center and any of its corners. " +
-        "If the height difference is greater than this value, the algorithm won't create a cell."
-    },
-    // TODO. this should ONLY influence path finding - not the creation of the cells
-    maxHeightNeighborToCenter: {
-      label: "Neighb Height Variance",
-      value: MAX_HEIGHT_NEIGHBOR_TO_CENTER,
-      hint: "The maximum allowed height difference between two neighboring cells. " +
-        "Cells won't be neighbors if the height difference between their centers is greater than this value. " +
-        "This influences the graph structure that gets created for pathfinding."
-    },
-    minHeightDiffStackedCells: {
-      label: "Min. Height Diff. for Stacked Cells",
-      value: MIN_HEIGHT_DIFF_STACKED_CELLS,
-      hint: "The minimum height difference between two stacked cells (cells are stacked if they have the same (x,z) " +
-        "position, but differ on the y-axis. Cells won't be stacked if the height difference between them is less " +
-        "than this value. If two cells are possible at the same (x, z) location, the one with the higher y-value " +
-        "will be created."
-    },
-    mergeStackedCorners: {
-      label: "Merge Stacked Corners",
-      value: MERGE_STACKED_CORNERS,
-      hint: "If true, corners that are stacked (see Min. Height Diff. for Stacked Corners) will be merged into one corner."
-    },
-    minHeightDiffStackedCorners: {
-      label: "Min. Height Diff. for Stacked Corners",
-      value: MIN_HEIGHT_DIFF_STACKED_CORNERS,
-      hint: "The minimum height difference between two stacked corners (corners are stacked if they have the same " +
-        "(x,z) position, but differ on the y-axis. If Corners are closer than this value, their Vertices will be merged.",
-    },
-    obstacleHeightCenter: {
-      label: "Center Obstacle Height",
-      value: OBSTACLE_HEIGHT_CENTER,
-      hint: "When checking for obstacles inside the inner center radius, any intersection with larger height difference " +
-        "than this value will be considered an obstacle."
-    },
-    obstacleCenterRayStartHeight: {
-      label: "Ray Center Height ",
-      value: OBSTACLE_CENTER_RAY_START_HEIGHT,
-      hint: "The height at which the ray for checking for obstacles in the center area is cast."
-    },
-    obstacleNeighborRayStartHeight: {
-      label: "Ray Neighb Height",
-      value: OBSTACLE_NEIGHBOR_RAY_START_HEIGHT,
-      hint: "The height at which the ray for checking for obstacles in the area connecting two cells is cast."
-    },
-    obstacleHeightNeighbor: {
-      label: "Neighb Obstacle Height",
-      value: OBSTACLE_HEIGHT_NEIGHBOR,
-      hint: "When checking for obstacles inside the area connecting two cells, any intersection with larger height difference " +
-        "than this value will be considered an obstacle."
-    },
-    innerCellRadiusFactor: {
-      max: 1,
-      min: 0.1,
-      label: "Inner Cell Radius",
-      value: INNER_CELL_RADIUS_FACTOR,
-      hint: "The radius of the inner circle (the area that needs to be free of obstacles for a cell to be available) " +
-        "is calculated by multiplying the cell radius with this value."
-    },
-    centerAdaptionObstacleFactor: {
-      max: 1,
-      min: 0.1,
-      value: CENTER_ADAPTION_OBSTACLE_FACTOR,
-      label: "Center Adaption Obstacle Factor",
-      hint: "This value multiplied by inner radius, determines how much distance an adapted center position " +
-        "needs from all obstacle intersection to be considered non-blocked. Make this value smaller to be more " +
-        "lenient towards obstacles. 1 means any obstacle intersection inside the cell will mark it as blocked."
-    },
-    printGeometryHoleWarnings: {
-      label: "Print Geometry Hole Warnings",
-      value: PRINT_GEOMETRY_HOLE_WARNINGS,
-      hint: "If true, warnings will be logged to the console if the geometry contains holes."
-    },
+    misc: folder({
+      noCellIslands: {
+        label: "No Islands",
+        value: NO_CELL_ISLANDS,
+        hint: "If true, cells will be removed if they are not connected to the rest grid."
+      },
+      firstHitOnly: {label: "1st Ray Hit Only", value: FIRST_HIT_ONLY, hint: "Set Raycaster.onlyFirstHit"},
+      zFightOffset: {
+        label: "Z-Fight Offset", value: Z_FIGHT_OFFSET,
+        hint: "Offset between cells and environment. Cells are offset along their normal by this value."
+      },
+      printGeometryHoleWarnings: {
+        label: "Print Geometry Hole Warnings",
+        value: PRINT_GEOMETRY_HOLE_WARNINGS,
+        hint: "If true, warnings will be logged to the console if the geometry contains holes."
+      },
+    }, {collapsed: true}),
+
+
+    cells: folder({
+      cellProperties: folder({
+        cellGapFactor: {
+          label: "Cell Gap Factor",
+          hint: "The factor by which the cell radius is multiplied to calculate the gap between cells. 1 means no Gap",
+          value: CELL_GAP_FACTOR, max: 1, min: 0.1
+        },
+        cellRadius: {label: "Cell Radius", value: CELL_RADIUS},
+        cellOrientation: {
+          label: "Hex Orientation", options: {flat: Orientation.FLAT, pointy: Orientation.POINTY},
+          hint: "The Hex Cell Orientation. Rotates the hex cells by 90°."
+        },
+      }, {collapsed: true}),
+
+      mergeCorners: folder({
+        mergeStackedCorners: {
+          label: "Merge Stacked Corners",
+          value: MERGE_STACKED_CORNERS,
+          hint: "If true, corners that are stacked (see Min. Height Diff. for Stacked Corners) will be merged into one corner."
+        },
+        minHeightDiffStackedCorners: {
+          label: "Min. Height Diff. for Stacked Corners",
+          value: MIN_HEIGHT_DIFF_STACKED_CORNERS,
+          hint: "The minimum height difference between two stacked corners (corners are stacked if they have the same " +
+            "(x,z) position, but differ on the y-axis. If Corners are closer than this value, their Vertices will be merged.",
+        },
+
+      }, {collapsed: true}),
+      cutoffValues: folder({
+        maxHeightCenterToCorner: {
+          label: "Cell Height Variance",
+          value: MAX_HEIGHT_CENTER_TO_CORNERS,
+          hint: "The maximum allowed height difference between a cell's center and any of its corners. " +
+            "If the height difference is greater than this value, the algorithm won't create a cell."
+        },
+        // TODO. this should ONLY influence path finding - not the creation of the cells
+        maxHeightNeighborToCenter: {
+          label: "Neighb Height Variance",
+          value: MAX_HEIGHT_NEIGHBOR_TO_CENTER,
+          hint: "The maximum allowed height difference between two neighboring cells. " +
+            "Cells won't be neighbors if the height difference between their centers is greater than this value. " +
+            "This influences the graph structure that gets created for pathfinding."
+        },
+        minHeightDiffStackedCells: {
+          label: "Min. Height Diff. for Stacked Cells",
+          value: MIN_HEIGHT_DIFF_STACKED_CELLS,
+          hint: "The minimum height difference between two stacked cells (cells are stacked if they have the same (x,z) " +
+            "position, but differ on the y-axis. Cells won't be stacked if the height difference between them is less " +
+            "than this value. If two cells are possible at the same (x, z) location, the one with the higher y-value " +
+            "will be created."
+        },
+      }, {collapsed: true}),
+
+    }, {collapsed: true}),
+
+
+    obstacleChecking: folder({
+      checkForObstacles: {
+        label: "Check for Obstacles",
+        value: CHECK_FOR_OBSTACLES,
+        hint: "If true, the algorithm will check for obstacles in the environment and won't create cells that intersect " +
+          "with obstacles."
+      },
+      checkForObstaclesBetweenCells: {
+        label: "Check for Obstacles Between Cells",
+        value: CHECK_FOR_OBSTACLES_BETWEEN_CELLS,
+        hint: "If true, the algorithm will check for obstacles in the environment between two cells and won't create " +
+          "a connection between the two, that can be used for path finding."
+      },
+      obstacleHeightCenter: {
+        label: "C.Height",
+        value: OBSTACLE_HEIGHT_CENTER,
+        hint: "When checking for obstacles inside the inner center radius, any intersection with larger height difference " +
+          "than this value will be considered an obstacle."
+      },
+      obstacleCenterRayStartHeight: {
+        label: "Ray Center Height ",
+        value: OBSTACLE_CENTER_RAY_START_HEIGHT,
+        hint: "The height at which the ray for checking for obstacles in the center area is cast."
+      },
+      obstacleNeighborRayStartHeight: {
+        label: "Ray Neighb Height",
+        value: OBSTACLE_NEIGHBOR_RAY_START_HEIGHT,
+        hint: "The height at which the ray for checking for obstacles in the area connecting two cells is cast."
+      },
+      obstacleHeightNeighbor: {
+        label: "N.Height",
+        value: OBSTACLE_HEIGHT_NEIGHBOR,
+        hint: "When checking for obstacles inside the area connecting two cells, any intersection with larger height difference " +
+          "than this value will be considered an obstacle."
+      },
+      innerCellRadiusFactor: {
+        max: 1,
+        min: 0.1,
+        label: "Inner Radius",
+        value: INNER_CELL_RADIUS_FACTOR,
+        hint: "The radius of the inner circle (the area that's supposed to be free) " +
+          "is calculated by multiplying the cell radius with this value. Decrease this value to make cells more lenient" +
+          "towards obstacles."
+      },
+      centerAdaptionObstacleFactor: {
+        max: 1,
+        min: 0.1,
+        value: CENTER_ADAPTION_OBSTACLE_FACTOR,
+        label: "C.Adaption Factor",
+        hint: "This value multiplied by inner radius, determines how much distance an adapted center position " +
+          "needs from all obstacle intersection to be considered non-blocked. Make this value smaller to be more " +
+          "lenient towards obstacles. 1 means any obstacle intersection inside the cell will mark it as blocked."
+      },
+      neighborStripSizeFactor: {
+        max: 1,
+        min: 0.1,
+        value: NEIGHBOR_STRIP_SIZE_FACTOR,
+        label: "N.Strip Factor",
+        hint: "This value determines how big the strip connecting two cells is. This strip must be free of obstacles" +
+          "to make two cells neighbors. Decrease this value to make it easier for two cells to be neighbors."
+      }
+    }, {collapsed: true}),
+
   }, {collapsed: true});
 
   useEffect(() => {
@@ -335,9 +388,7 @@ export function CreatorPlane() {
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         onDoubleClick={() => {
-          console.log("xxx");
           planeConfig.mode = modes[(modes.indexOf(planeConfig.mode) + 1) % modes.length];
-          console.log(planeConfig.mode);
           planeConfig.color = planeColor[(planeColor.indexOf(planeConfig.color) + 1) % planeColor.length];
         }}>
         <planeGeometry args={[startWidth, startHeight]}/>

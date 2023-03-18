@@ -1,8 +1,18 @@
 // =====================================================================================================================
-import {BufferAttribute, BufferGeometry, Color, Intersection, Mesh, Object3D, Vector3} from "three";
+import {
+  BufferAttribute,
+  BufferGeometry,
+  BufferGeometryUtils,
+  Color,
+  Intersection,
+  Mesh,
+  Object3D,
+  Vector3
+} from "three";
 import {heightMapConfig, renderOptions} from "../HexGrid";
 import {CornersByCenterByHex, idByCenterIntersection} from "./buildGridDataStructure";
-import {sharedCellDefaultMaterial} from "./globals";
+import {idByFaceIndex, sharedCellDefaultMaterial} from "./globals";
+import {mergeBufferGeometries} from "three-stdlib";
 
 /*
 Contains a function that creates the hexagon meshes from a height field
@@ -13,37 +23,46 @@ and a function to create the buffer geometry for a single hexagon
 export type PhysicalGrid = { [id: string]: Mesh };
 
 
-export function createHexGridMeshFromHeightField(scene: Object3D, cellsByHex: CornersByCenterByHex): PhysicalGrid {
-  // stores the mesh by id, also we store the id in mesh.userData
-  const physicalGrid: PhysicalGrid = {};
+export function createHexGridMeshFromHeightField(scene: Object3D, cellsByHex: CornersByCenterByHex) {
+  // Instead of creating lots of meshes, we merge all geometries together to one big grid geometry
+  // that we can then use for raycasting.
+  const geometries = [];
+  const numFacesPerCell = 4;
+  idByFaceIndex.clear(); // clear in case we're re-building the grid
 
+
+  let faceIdx = 0;
   for (const [hex, cells] of cellsByHex) {
     for (const [centerIntersection, cornerIntersections] of cells) {
       // if an intersection did not get an id when we build the grid graph, we will not create a mesh for it
-      if (!idByCenterIntersection.has(centerIntersection)) continue;
-
+      if (!idByCenterIntersection.has(centerIntersection)) {
+        console.error("no id for center intersection", centerIntersection);
+        continue; // this shouldn't happen anymore, that's why we throw an error
+      }
       const bufferGeometry = createBufferGeometryFromIntersections(cornerIntersections, centerIntersection);
-      const mesh = new Mesh(bufferGeometry, sharedCellDefaultMaterial);
-
-      mesh.position.set(
-        ...new Vector3(
-          centerIntersection.point.x,
-          centerIntersection.point.y,
-          centerIntersection.point.z
-        )./*multiplyScalar(1 + heightMapConfig.zFightOffset).*/toArray()
-      );
-      scene.add(mesh);
-      // we saved the id by the intersection earlier - this way we can now associate
-      // each mesh with the cell id, which is used for path finding.
+      geometries.push(bufferGeometry);
+      // we link of each the geometry faces to the cell id
       const id = idByCenterIntersection.get(centerIntersection)!;
-      mesh.userData = {id};
-      physicalGrid[id] = mesh;
+      for (let i = 0; i < numFacesPerCell; i++) {
+        idByFaceIndex.set(faceIdx + i, id);
+      }
+      faceIdx += numFacesPerCell;
     }
   }
-  // we no longer need the map
-  //idByCenterIntersection.clear();
 
-  return physicalGrid;
+  const resultGeometry = mergeBufferGeometries(geometries);
+  if (!resultGeometry) {
+    throw "failed to build grid geometry";
+  }
+  // does not have to be added to the scene tree to perform raycasts on it
+  const gridMesh = new Mesh(resultGeometry, sharedCellDefaultMaterial);
+
+  // TODO: include grid gap parameter into merged mesh (probably by making the individual geometry a bit larger)
+  // scene.add(gridMesh);
+  // Using the bvh for raycasting leads to totally unexpected behaviour
+  //gridMesh.geometry.computeBoundsTree(); // compute bvh for merged geometry
+
+  return gridMesh;
 }
 
 
@@ -55,9 +74,9 @@ export function createBufferGeometryFromIntersections(corners: Intersection[], c
 
   const transformPos = (point: Vector3, normal: Vector3) =>
     new Vector3(
-      point.x - center.point.x,
-      point.y - center.point.y,
-      point.z - center.point.z
+      point.x, /*point.x - center.point.x,*/
+      point.y, /*point.y - center.point.y,*/
+      point.z, /*point.z - center.point.z*/
     ).multiplyScalar(heightMapConfig.cellGapFactor).add(normal.clone().multiplyScalar(heightMapConfig.zFightOffset));
 
   //const point0 = new Vector3().addVectors(corners[0].point, new Vector3(...center.face!.normal.toArray()).multiplyScalar(0.1));

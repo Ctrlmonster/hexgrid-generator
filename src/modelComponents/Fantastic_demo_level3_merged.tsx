@@ -64,9 +64,14 @@ export function Model(props: JSX.IntrinsicElements['group']) {
   return (
     <group {...props} dispose={null}>
       <mesh castShadow receiveShadow geometry={nodes.P_MOD_Floor_01_E_straight_med.geometry}
-            material={materials['M_MOD_Floor_01_v3.001']} position={[-20, 20.45, -28]}/>
+            material={materials['M_MOD_Floor_01_v3.001']} position={[-20, 20.45, -28]}>
+        {props.children}
+
+      </mesh>
       <mesh castShadow receiveShadow geometry={nodes.P_MOD_Floor_01_O_convex_med002.geometry}
-            material={materials['M_MOD_Floor_01_v3.001']} position={[-20, 3, -14]} rotation={[0, -1.57, 0]}/>
+            material={materials['M_MOD_Floor_01_v3.001']} position={[-20, 3, -14]} rotation={[0, -1.57, 0]}>
+
+      </mesh>
 
       {
         /*

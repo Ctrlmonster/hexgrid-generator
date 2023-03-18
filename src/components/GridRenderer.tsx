@@ -1,17 +1,18 @@
 import {useEffect} from "react";
 import {useThree} from "@react-three/fiber";
-import {resetPathfinding} from "../grid/functions";
+import {computeColorGradient, resetPathfinding} from "../grid/functions";
 import {
   cellMeshes,
   finder,
   instancedMeshGridRef, pathInstances,
   pathMeshes,
-  physicalGridRef,
+  mergedGridMesh,
   startCellIdRef,
-  targetCellIdRef
+  targetCellIdRef, idByFaceIndex
 } from "../grid/globals";
 import {renderOptions} from "../HexGrid";
 import {Color} from "three";
+
 
 
 const cellColor = new Color();
@@ -28,7 +29,8 @@ export default function GridRenderer() {
   useEffect(() => {
     // right click to halt pathfinding - path will be deleted if clicked outside the grid
     const onContextMenu = () => {
-      const intersects = raycaster.intersectObject(instancedMeshGridRef.current!);
+      if (!mergedGridMesh.current) return;
+      const intersects = raycaster.intersectObject(mergedGridMesh.current!);
       if (intersects.length) resetPathfinding(true);
       else resetPathfinding(false);
     }
@@ -38,14 +40,12 @@ export default function GridRenderer() {
 
     // click on cell to select start cell for path finding
     const onClick = () => {
-      if (instancedMeshGridRef.current) {
-        const intersects = raycaster.intersectObject(instancedMeshGridRef.current!);
+      // intersecting merged grid geometry
+      if (mergedGridMesh.current) {
+        const intersects = raycaster.intersectObject(mergedGridMesh.current!);
         const [intersection] = intersects;
-        const instanceId = intersection ? intersection.instanceId : null;
-        if (instanceId == null) return;
-
-        startCellIdRef.current = intersection.object.userData.cellIds[instanceId];
-        console.log(startCellIdRef.current);
+        if (!intersection) return;
+        startCellIdRef.current = idByFaceIndex.get(intersection.faceIndex);
       }
     }
     window.addEventListener('click', onClick);
@@ -53,17 +53,16 @@ export default function GridRenderer() {
 
 
     const onMouseMove = async () => {
-      if (!renderOptions.displayPathFinding || !instancedMeshGridRef.current) return;
-
-      const intersects = raycaster.intersectObject(instancedMeshGridRef.current);
-      const [intersection] = intersects;
-
-      const instanceId = intersection ? intersection.instanceId : null;
-      if (instanceId == null) return;
+      if (!renderOptions.displayPathFinding || !instancedMeshGridRef.current || !mergedGridMesh.current) return;
       if (startCellIdRef.current == null) return;
       if (waitingForPath) return;
 
-      targetCellIdRef.current = intersection.object.userData.cellIds[instanceId];
+      const intersects = raycaster.intersectObject(mergedGridMesh.current!);
+      const [intersection] = intersects;
+      if (!intersection) return;
+      targetCellIdRef.current = idByFaceIndex.get(intersection.faceIndex);
+
+
       waitingForPath = true;
       const path = await finder.findPath(startCellIdRef.current, targetCellIdRef.current!);
       waitingForPath = false;
@@ -76,8 +75,9 @@ export default function GridRenderer() {
       pathInstances.clear();
       pathInstances.addMany(...path.map(id => instancedMeshGridRef.current!.userData.instanceIndexByCellId[id]));
       // and set the new colors
-      pathInstances.forEach(idx => {
-        cellColorValues[idx] = 0xff0000;
+      const colors = computeColorGradient(pathInstances.size);
+      pathInstances.forEach((idx, _, __, i) => {
+        cellColorValues[idx] = colors[i].getHex();
       });
       cellColorValues.forEach((v, i) => {
         instancedMeshGridRef.current!.setUniformAt("diffuse", i, cellColor.set(v));

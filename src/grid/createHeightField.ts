@@ -22,6 +22,7 @@ export const castRay = (() => {
     const allIntersections = raycaster.intersectObject(scene, true);
     return allIntersections.filter((intersection) => intersection.object instanceof Mesh);
   }
+
   return _castRay;
 })();
 
@@ -31,12 +32,12 @@ export const allIntersectionsByKey: { [p: string]: Intersection[] } = {}; // use
 export function computeHexGridIntersections(scene: Object3D,
                                             grid: Grid<Hex>,
                                             config: {
-                                              height: number,
+                                              rayStartHeight: number,
                                               rayCastYDirection: number,
                                               firstHitOnly: boolean,
                                             }): HexGridIntersections {
 
-  const {height, rayCastYDirection, firstHitOnly} = config;
+  const {rayStartHeight, rayCastYDirection, firstHitOnly} = config;
 
   const dir = {x: 0, y: rayCastYDirection, z: 0} as Vector3;
   const resultsByHex = new Map<Hex, HexIntersections>();
@@ -58,14 +59,14 @@ export function computeHexGridIntersections(scene: Object3D,
         hexResult.intersectionsByCorner[key] = allIntersectionsByKey[key];
       } else {
         // we swap y and z because honey-comp only knows about two dimensions
-        const startPos = {x, y: height, z: y} as Vector3;
+        const startPos = {x, y: rayStartHeight, z: y} as Vector3;
         const intersections = castRay(scene, startPos, dir, firstHitOnly);
         allIntersectionsByKey[key] = intersections;
         hexResult.intersectionsByCorner[key] = intersections;
       }
     }
     // make one additional raycast from the center of the hex
-    hexResult.centerIntersections = castRay(scene, {x: hex.x, y: height, z: hex.y} as Vector3, dir, firstHitOnly);
+    hexResult.centerIntersections = castRay(scene, {x: hex.x, y: rayStartHeight, z: hex.y} as Vector3, dir, firstHitOnly);
     // if no center intersection was found, we can skip this hex
     if (hexResult.centerIntersections.length > 0) {
       const everyCornerIntersected = Object.values(hexResult.intersectionsByCorner)

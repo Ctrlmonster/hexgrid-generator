@@ -1,9 +1,9 @@
 import {Canvas} from "@react-three/fiber";
 import SceneContainer from "../SceneContainer";
 import {Leva, useControls} from "leva";
-import {exportGridMesh} from "../helper/gltfExport";
+import {exportGLTF} from "../helper/gltfExport";
 import {build3dGridWithPathfinding} from "../grid/functions";
-import {cellMeshes, sceneRef} from "../grid/globals";
+import {cellMeshes, mergedGridMesh, sceneRef} from "../grid/globals";
 
 
 function App() {
@@ -21,7 +21,7 @@ function App() {
 
       <div className={"flex absolute top-0 left-0 m-5 text-white font-bold text-xl"}>
         {/* @ts-ignore */}
-        <div onClick={() => cellMeshes.length && exportGridMesh(cellMeshes)}
+        <div onClick={() => mergedGridMesh.current && exportGLTF(mergedGridMesh.current)}
              className={"bg-blue-500 py-2 px-4 hover:cursor-pointer " +
                "mr-5 rounded interaction-button"}>
           Save GridMesh

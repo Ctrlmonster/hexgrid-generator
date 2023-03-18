@@ -1,7 +1,7 @@
 import {BoxGeometry, Mesh, MeshBasicMaterial, Object3D, PlaneGeometry} from "three";
 // @ts-ignore
 import {GLTFExporter} from "three/addons/exporters/GLTFExporter.js";
-import {cellMeshes} from "../components/GridRenderer";
+
 
 // adapted from the following three js example:
 // https://github.com/mrdoob/three.js/blob/master/examples/misc_exporter_gltf.html
@@ -32,7 +32,7 @@ function saveArrayBuffer(buffer: BufferSource, filename: string) {
   save(new Blob([buffer], {type: 'application/octet-stream'}), filename);
 }
 
-function exportGLTF(input: Object3D) {
+export function exportGLTF(input: Object3D) {
   const gltfExporter = new GLTFExporter();
   gltfExporter.parse(
     input,
@@ -49,10 +49,3 @@ function exportGLTF(input: Object3D) {
   );
 }
 
-export function exportGridMesh(cellMeshes: Mesh[]) {
-  const parent = new Object3D();
-  cellMeshes.forEach((mesh: Mesh) => {
-    parent.add(mesh);
-  });
-  exportGLTF(parent);
-}
