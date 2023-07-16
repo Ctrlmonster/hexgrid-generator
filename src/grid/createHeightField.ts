@@ -42,7 +42,7 @@ export function computeHexGridIntersections(scene: Object3D,
   const dir = {x: 0, y: rayCastYDirection, z: 0} as Vector3;
   const resultsByHex = new Map<Hex, HexIntersections>();
 
-  // we go through all hexes and for each corner of a given hex
+  // we go through all hexes and for each corner of a giveyn hex
   // we cast a ray down to find the intersections with the environment.
   // since corners are shared by multiple hexes, we can optimize by only
   // casting a ray for each unique corner. We make one additional raycast

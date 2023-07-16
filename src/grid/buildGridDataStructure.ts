@@ -15,17 +15,15 @@ import {
   Vector3
 } from "three";
 import {castRay, HexGridIntersections} from "./createHeightField";
-import {heightMapConfig, renderOptions} from "../HexGrid";
+import {gridConfig, renderOptions} from "../HexGrid";
 import TypedSet from "../helper/TypedSet";
 import {
   adaptedCellCentersById,
   centerIntersectionsInstancedMeshesRef,
   ENVIRONMENT_REF, gridGraphRef,
-  neighborIntersectionsInstancedMeshesRef, sceneRef
+  neighborIntersectionsMeshRefs, neighborStripMaterialBlocked, neighborStripMaterialFree, pathFinder, sceneRef
 } from "./globals";
 import TypedMap from "../helper/TypedMap";
-import createGraph from "ngraph.graph";
-import {nba} from "ngraph.path";
 
 
 export function createGrid2d({
@@ -35,7 +33,7 @@ export function createGrid2d({
                                offsetZ,
                                gridCols,
                                gridRows
-                             }: typeof heightMapConfig) {
+                             }: typeof gridConfig) {
   // ________________________________________________________________
   // 1. Create a hex class:
   const Tile = defineHex({
@@ -115,7 +113,7 @@ export function centerIntersectionBombing(centerPos: Vector3,
       const intersection = intersections[0];
 
       if (!intersection) { // we just throw a warning and continue
-        if (heightMapConfig.printGeometryHoleWarnings) {
+        if (gridConfig.printGeometryHoleWarnings) {
           console.warn(`No intersection found at x: ${startPos.x} y: ${startPos.y} z: ${startPos.z}. There is likely a hole in your environment geometry.`);
         }
         continue;
@@ -171,7 +169,7 @@ export function centerIntersectionBombing(centerPos: Vector3,
   // TODO: instead we should check whether the distance to all intersections is larger than the inner radius
   // we check if any obstacles are still too close to the center, after adapting its position
   const cellIsBlocked = obstacleIntersections.some(
-    (point) => point.distanceTo(finalCenter) < (innerRadius * heightMapConfig.centerAdaptionObstacleFactor)
+    (point) => point.distanceTo(finalCenter) < (innerRadius * gridConfig.centerAdaptionObstacleFactor)
   );
 
   if (debugIntersections) {
@@ -213,10 +211,12 @@ export function neighborIntersectionBombing(cellRadius: number,
                                             centerPositionB: Vector3,
                                             obstacleHeight: number,
                                             startHeight: number,
-                                            neighborStripSizeFactor: number,
+                                            neighborStripWidthFactor: number,
+                                            neighborStripLenFactor: number,
                                             environmentRef: Object3D,
                                             scene: Scene,
                                             debugIntersections: boolean) {
+
   /*
   Idea: Similar to centerIntersectionBombing, we now bomb the area connecting to cells
   with intersections to check if it's blocked, thereby determining if two cells can be
@@ -245,10 +245,16 @@ export function neighborIntersectionBombing(cellRadius: number,
   a4 = a2 + vecBetweenCells.setLen(l2)
    */
 
+  // we're adding a len parameter for the strips
+  // 4 -> means full, 1 means 0
+  // param needs to map 0 to 1 and 1 to 4
+  // result = param * 4 + 1
+  const convertParamToLen = (param: number) => param * 4 + 1;
+
   const alpha = Math.PI / 6;
   const sideLen = 2 * Math.sin(alpha) * cellRadius;
-  const innerRadius = sideLen / 2;
-  const l1 = neighborStripSizeFactor * sideLen;
+  const innerRadius = sideLen / convertParamToLen(neighborStripLenFactor);
+  const l1 = neighborStripWidthFactor * sideLen;
   const l2 = 2 * (Math.cos(alpha) * cellRadius - innerRadius);
 
   const vecBetweenCells = new Vector2().subVectors(
@@ -290,7 +296,13 @@ export function neighborIntersectionBombing(cellRadius: number,
   const stepSizeA1 = distA1 / numStepsHorizontal;
   const stepSizeA3 = distA3 / numStepsVertical;
 
-  let obstacleFound = false;
+  // Update: instead of just flagging the strip as blocked when we find
+  // a single intersection, we add little wiggle room. Say when 5% of
+  // all intersections tests fail, the path is blocked. This way we don't
+  // immediately flag a path when a single check fails (i.e. because of geometry holes)
+  let numberOfChecks = 0; // we count the num of checks
+  let numberOfObstacles = 0;
+
   for (let i = 0; i <= numStepsHorizontal; i++) {
     for (let j = 0; j <= numStepsVertical; j++) {
       const stepA1 = dirA1.clone().setLength(stepSizeA1 * i);
@@ -304,14 +316,15 @@ export function neighborIntersectionBombing(cellRadius: number,
       const intersection = intersections[0];
       // if there was no intersection there is probably a hole in the mesh
       if (!intersection) { // we just throw a warning and continue
-        if (heightMapConfig.printGeometryHoleWarnings) {
+        if (gridConfig.printGeometryHoleWarnings) {
           console.warn(`No intersection found at x: ${castPos.x} y: ${castPos.y} z: ${castPos.z}. There is likely a hole in your environment geometry.`);
         }
         continue;
       }
 
       const isObstacle = Math.abs(intersection.point.y - baseHeight) >= obstacleHeight;
-
+      numberOfChecks++;
+      if (isObstacle) numberOfObstacles++;
 
       if (debugIntersections) {
         // create an instance for the intersection point
@@ -322,13 +335,14 @@ export function neighborIntersectionBombing(cellRadius: number,
       }
 
       // check if the intersection point is higher than the obstacle height
-      // TODO: obstacle found condition must be improved - there is no tolerance parameter as of right now
       if (isObstacle) {
-        obstacleFound = true;
         if (debugIntersections) intersectedPointIndices.push(j * numStepsHorizontal + i);
       }
     }
   }
+
+  const maxNumberOfObstacles = Math.max(numberOfChecks * gridConfig.neighborStripIntersectionTolerance, 1);
+  const pathBlocked = numberOfObstacles >= maxNumberOfObstacles;
 
   if (debugIntersections) {
     const matrixValues = new Float32Array(instanceMatrices.length * 16);
@@ -346,7 +360,7 @@ export function neighborIntersectionBombing(cellRadius: number,
     const color = new Color();
     instanceColors.forEach((colorValue, i) => sphereInstancedMesh.setUniformAt('diffuse', i, color.set(colorValue)));
     scene.add(sphereInstancedMesh);
-    neighborIntersectionsInstancedMeshesRef.current.push(sphereInstancedMesh);
+    neighborIntersectionsMeshRefs.points.push(sphereInstancedMesh);
 
     // ----------------------------------------
 
@@ -365,21 +379,24 @@ export function neighborIntersectionBombing(cellRadius: number,
       a4.x, centerPositionA.y, a4.y,
     ]);
     geometry.setAttribute('position', new BufferAttribute(vertices, 3));
+    /*
     const material = new MeshBasicMaterial({
-      color: obstacleFound ? 0xff0000 : 0x00ff00,
+      color: pathBlocked ? 0xff0000 : 0x00ff00,
       side: DoubleSide,
       transparent: true,
       opacity: 0.5,
       depthTest: false
     });
+    */
+    const material = pathBlocked ? neighborStripMaterialBlocked : neighborStripMaterialFree;
     const mesh = new Mesh(geometry, material);
     mesh.position.copy(centerPositionB.clone().setY(zFightOffset));
     scene.add(mesh);
-    neighborIntersectionsInstancedMeshesRef.strips.push(mesh);
+    neighborIntersectionsMeshRefs.strips.push(mesh);
   }
 
 
-  return obstacleFound;
+  return pathBlocked;
 }
 
 
@@ -398,34 +415,6 @@ export function filterOutCellIslands(cellsByHex: CornersByCenterByHex, masterGri
   // ---------------------------------------------------------------------------------------------------
 
 
-  // Setting up pathfinding on the main thread real quick to make this faster
-  const getDistance = (a: CellNode, b: CellNode) => {
-    return Math.sqrt((a.point.x - b.point.x) ** 2 + (a.point.y - b.point.y) ** 2 + (a.point.z - b.point.z) ** 2);
-  }
-
-  function setupPathFinding(masterGrid: GridGraph) {
-    // setup graph
-    const graph = createGraph();
-    for (const [id, data] of Object.entries(masterGrid)) {
-      graph.addNode(id, data);
-      for (const neighborId of data.neighbors) {
-        graph.addLink(id, neighborId);
-      }
-    }
-    // ------------------------------------------------------
-    // setup pathfinder using euclidean distance (seems to give better results for the 3d grid)
-    return nba<CellNode, CellNode>(graph, {
-      distance(fromNode, toNode) {
-        return getDistance(fromNode.data, toNode.data);
-      },
-      heuristic(fromNode, toNode) {
-        return getDistance(fromNode.data, toNode.data);
-      }
-    });
-  }
-
-
-  const pathFinder = setupPathFinding(masterGrid);
   const visitedIds = new TypedSet([startId]);
 
   for (const [hex, cornersByCenter] of cellsByHex) {
@@ -437,7 +426,7 @@ export function filterOutCellIslands(cellsByHex: CornersByCenterByHex, masterGri
           continue;
         }
         try {
-          const path = pathFinder.find(startId, id).map(cell => cell.data.id);
+          const path = pathFinder.current.find(startId, id).map(cell => cell.data.id);
 
           if (path.length === 0) {
             // REMOVING CELLS
@@ -467,14 +456,14 @@ export function filterOutObstructedCells(cellsByHex: CornersByCenterByHex) {
     for (const [initCenterIntersection] of cornersByCenter) {
       const {isBlocked, center} = centerIntersectionBombing(
         initCenterIntersection.point,
-        heightMapConfig.cellRadius,
-        heightMapConfig.innerCellRadiusFactor,
-        heightMapConfig.obstacleHeightCenter,
-        heightMapConfig.obstacleCenterRayStartHeight,
+        gridConfig.cellRadius,
+        gridConfig.innerCellRadiusFactor,
+        gridConfig.obstacleHeightCenter,
+        gridConfig.obstacleCenterRayStartHeight,
         new Vector3(0, -1, 0),
         ENVIRONMENT_REF.current,
         sceneRef.current!,
-        renderOptions.debugCenterIntersections
+        gridConfig.debugCenterIntersections
       )
 
       if (isBlocked) {
@@ -628,7 +617,7 @@ export function buildGridFromHexGridIntersections(hexGridIntersections: HexGridI
 
 
   // now we know which center intersections share which corner intersections.
-  if (heightMapConfig.mergeStackedCorners)
+  if (gridConfig.mergeStackedCorners)
     mergeStackedCorners(cornersByCenterByHex, usedIntersectionsByCorner, usersByIntersection);
 
   // when we now iterate over all used corner intersections for a given hex corner and check
@@ -651,7 +640,7 @@ export function buildGridFromHexGridIntersections(hexGridIntersections: HexGridI
       cornerIntersections.forEach((cornerIntersection) => {
         if (visitedCornerIntersections.has(cornerIntersection)) {
           // TODO: this happens with the big model - check if this assertion is still valid
-          throw new Error('already visited');
+          //throw new Error('already visited');
         }
         visitedCornerIntersections.add(cornerIntersection);
       });
@@ -695,7 +684,7 @@ function mergeStackedCorners(cellsByHex: CornersByCenterByHex,
   between stacked cells. Just to be safe we check this assumption inside an assertion.
  */
 
-  if (heightMapConfig.minHeightDiffStackedCells <= heightMapConfig.minHeightDiffStackedCorners) {
+  if (gridConfig.minHeightDiffStackedCells <= gridConfig.minHeightDiffStackedCorners) {
     throw new Error('minHeightDiffStackedCells must be larger than minHeightDiffStackedCorners');
   }
   console.log(usedIntersectionsByCorner);
@@ -719,7 +708,7 @@ function mergeStackedCorners(cellsByHex: CornersByCenterByHex,
         return;
       }
       const dist = Math.abs(lastCorner.point.y - cornerIntersection.point.y);
-      if (dist < heightMapConfig.minHeightDiffStackedCorners) {
+      if (dist < gridConfig.minHeightDiffStackedCorners) {
         // we have candidates for merging - but we must first check the distance to the center.
         // get the user
         const usersA = usersByIntersection.get(cornerIntersection)!;
@@ -731,12 +720,12 @@ function mergeStackedCorners(cellsByHex: CornersByCenterByHex,
         const allUsersInRangeA = usersA.every((user) => {
           const dist = Math.abs(user.point.y - cornerIntersection!.point.y);
           // the distance has to be smaller than the allowed dist between center and corner
-          return dist < heightMapConfig.maxHeightCenterToCorner;
+          return dist < gridConfig.maxHeightCenterToCorner;
         })
         const allUsersInRangeB = usersB.every((user) => {
           const dist = Math.abs(user.point.y - cornerIntersection!.point.y);
           // the distance has to be smaller than the allowed dist between center and corner
-          return dist < heightMapConfig.maxHeightCenterToCorner;
+          return dist < gridConfig.maxHeightCenterToCorner;
         });
 
         if (allUsersInRangeA && allUsersInRangeB) {
@@ -858,6 +847,8 @@ export function buildGridGraph(cornersByCenterByHex: CornersByCenterByHex, grid2
   // neighbor for each cardinal direction. We will have to find the best option by comparing height
   // differences between cells and their neighbors.
 
+  const isBlockedByCombinedId = new Map<string, boolean>();
+
   // ===============================================================================================
   for (const [hex, cornersByCenter] of cornersByCenterByHex) {
     if (cornersByCenter.size === 0) { // sanity check
@@ -899,30 +890,38 @@ export function buildGridGraph(cornersByCenterByHex: CornersByCenterByHex, grid2
           // this is the base condition for being neighbors - the height difference can't be larger than some parameter
           if (distance > maxHeightNeighborToCenter)
             continue;
-          // this is the second condition - check if the path between the two cells is not obstructed by obstacles
+
+
+          // the second condition is - that the path between the two cells is not obstructed by obstacles
 
           const myId = getCellId(centerCell);
           const neighborId = getCellId(neighborCell);
           const adaptedCenterA = adaptedCellCentersById[myId];
           const adaptedCenterB = adaptedCellCentersById[neighborId];
 
+          // make sure that we haven't checked this neighbor pair before
+          const combinedStringA = myId + neighborId;
+          const combinedStringB = neighborId + myId;
 
-          /*
-          TODO: okay so this is the reason that some centers don't have get an id
-            - follow why
-           */
-          if (heightMapConfig.checkForObstaclesBetweenCells) {
+          const isBlocked = isBlockedByCombinedId.get(combinedStringA) || isBlockedByCombinedId.get(combinedStringB);
+          if (isBlocked) continue;
+
+          if (gridConfig.checkForObstaclesBetweenCells) {
             const isBlocked = neighborIntersectionBombing(
-              heightMapConfig.cellRadius,
+              gridConfig.cellRadius,
               new Vector3(adaptedCenterA.x, adaptedCenterA.y, adaptedCenterA.z),
               new Vector3(adaptedCenterB.x, adaptedCenterB.y, adaptedCenterB.z),
-              heightMapConfig.obstacleHeightNeighbor,
-              heightMapConfig.obstacleNeighborRayStartHeight,
-              heightMapConfig.neighborStripSizeFactor,
+              gridConfig.obstacleHeightNeighbor,
+              gridConfig.obstacleNeighborRayStartHeight,
+              gridConfig.neighborStripWidthFactor,
+              gridConfig.neighborStripLenFactor,
               ENVIRONMENT_REF.current,
               sceneRef.current!,
-              renderOptions.debugNeighbourIntersections
+              gridConfig.debugNeighborIntersections
             );
+            isBlockedByCombinedId.set(combinedStringA, isBlocked);
+            isBlockedByCombinedId.set(combinedStringB, isBlocked);
+
             if (isBlocked) continue;
           }
 

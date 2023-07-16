@@ -1,47 +1,37 @@
 import {
-  cellMeshes, centerIntersectionsInstancedMeshesRef,
-  ENVIRONMENT_REF,
-  finder, gridGraphRef, GROUND_REF, instancedMeshGridRef, neighborIntersectionsInstancedMeshesRef,
-  pathMeshes,
-  mergedGridMesh, sceneRef,
-  sharedCellDefaultMaterial,
+  centerIntersectionsInstancedMeshesRef,
+  gridGraphRef,
+  GROUND_REF,
+  instancedMeshGridRef,
+  mergedGridMesh,
+  neighborIntersectionsMeshRefs,
+  pathFinder,
+  sceneRef,
   startCellIdRef,
   targetCellIdRef
 } from "./globals";
-import {heightMapConfig, planeConfig} from "../HexGrid";
+import {gridConfig, planeConfig} from "../HexGrid";
 import {Color, Scene} from "three";
 import {
   buildGridFromHexGridIntersections,
   buildGridGraph,
+  CellNode,
   createGrid2d,
   filterOutCellIslands,
-  filterOutObstructedCells, resetCellId
+  filterOutObstructedCells,
+  GridGraph, idByCenterIntersection,
+  resetCellId
 } from "./buildGridDataStructure";
 import {computeHexGridIntersections} from "./createHeightField";
-//import {createHexGridMeshFromHeightField} from "./buildGridMesh";
 import {createCellInstances} from "../components/CustomInstance";
 import {createHexGridMeshFromHeightField} from "./buildGridMesh";
+import createGraph from "ngraph.graph";
+import {nba} from "ngraph.path";
 
-/*
-// this was relevant before we started using instances for cells
-export function getCellMeshFromId(id: string) {
-  return physicalGridRef.current![id];
-}
 
-export function getMeshesOfCellAndNeighborsFromId(id: string) {
-  const cell = getCellMeshFromId(id);
-  const neighbors = gridGraphRef.current![id].neighbors.map(id => getCellMeshFromId(id));
-  return {cell, neighbors};
-}
-*/
-
-export function resetPathfinding(keepPath: boolean) {
+export function resetPathfinding() {
   startCellIdRef.current = null;
   targetCellIdRef.current = null;
-  if (!keepPath) {
-    pathMeshes.forEach(mesh => mesh.material = sharedCellDefaultMaterial);
-    pathMeshes.clear();
-  }
 }
 
 function resetGridInstances() {
@@ -54,18 +44,18 @@ function resetGridInstances() {
 }
 
 function resetIntersectionInstances() {
-  neighborIntersectionsInstancedMeshesRef.current.forEach(mesh => {
+  neighborIntersectionsMeshRefs.points.forEach(mesh => {
     sceneRef.current!.remove(mesh);
     mesh.material.dispose();
     mesh.dispose();
   });
-  neighborIntersectionsInstancedMeshesRef.current.length = 0;
-  neighborIntersectionsInstancedMeshesRef.strips.forEach(mesh => {
+  neighborIntersectionsMeshRefs.points.length = 0;
+  neighborIntersectionsMeshRefs.strips.forEach(mesh => {
     sceneRef.current!.remove(mesh);
     mesh.geometry.dispose(); // strips are actual meshes, not instanced meshes
     mesh.material.dispose();
   });
-  neighborIntersectionsInstancedMeshesRef.strips.length = 0;
+  neighborIntersectionsMeshRefs.strips.length = 0;
   // -------------------------------------------------------------
   centerIntersectionsInstancedMeshesRef.current.forEach(mesh => {
     sceneRef.current!.remove(mesh);
@@ -79,7 +69,7 @@ function resetGridAndPathfinding(scene: Scene) {
   // -------------------------------------------------------------
   // reset previous
   resetCellId();
-  resetPathfinding(false);
+  resetPathfinding();
   resetIntersectionInstances();
   resetGridInstances();
   if (mergedGridMesh.current) {
@@ -87,55 +77,71 @@ function resetGridAndPathfinding(scene: Scene) {
     scene.remove(mergedGridMesh.current);
     mergedGridMesh.current = null;
   }
-  // delete all previous meshes
-  // cell meshes are no longer relevant since we're using instances (I think)
-  // remove this in that case
-  for (const cellMesh of cellMeshes) {
-    // dispose geom, we keep the material because it is shared
-    cellMesh.geometry.dispose();
-    scene.remove(cellMesh);
+}
+
+
+// Setting up pathfinding on the main thread real quick to make this faster
+const getDistance = (a: CellNode, b: CellNode) => {
+  return Math.sqrt((a.point.x - b.point.x) ** 2 + (a.point.y - b.point.y) ** 2 + (a.point.z - b.point.z) ** 2);
+}
+
+function setupPathFinding(masterGrid: GridGraph) {
+  // setup graph
+  const graph = createGraph();
+  for (const [id, data] of Object.entries(masterGrid)) {
+    graph.addNode(id, data);
+    for (const neighborId of data.neighbors) {
+      graph.addLink(id, neighborId);
+    }
   }
-  cellMeshes.length = 0;
-  // -------------------------------------------------------------
+  // ------------------------------------------------------
+  // setup pathfinder using Euclidean distance (seems to give better results for the 3d grid)
+  return nba<CellNode, CellNode>(graph, {
+    distance(fromNode, toNode) {
+      return getDistance(fromNode.data, toNode.data);
+    },
+    heuristic(fromNode, toNode) {
+      return getDistance(fromNode.data, toNode.data);
+    }
+  });
 }
 
 
 export async function build3dGridWithPathfinding(scene: Scene) {
   resetGridAndPathfinding(scene);
   // ---------------------------------------------------
-  const grid2d = createGrid2d(heightMapConfig);
+  const grid2d = createGrid2d(gridConfig);
 
   // find all intersections of the 2d grid with the scene
   const hexGridIntersections = computeHexGridIntersections(
     GROUND_REF.current,
     grid2d,
-    heightMapConfig
+    gridConfig
   );
   // build the data structure of intersections points - basically the 3d grid
   const cellsByHex = buildGridFromHexGridIntersections(
     hexGridIntersections,
-    heightMapConfig.minHeightDiffStackedCells,
-    heightMapConfig.maxHeightCenterToCorner
+    gridConfig.minHeightDiffStackedCells,
+    gridConfig.maxHeightCenterToCorner
   );
 
   // we remove all cells that are obstructed by obstacles
-  if (heightMapConfig.checkForObstacles) filterOutObstructedCells(cellsByHex);
+  if (gridConfig.checkForObstacles) filterOutObstructedCells(cellsByHex);
   // merge corners that have very small height difference
 
   // build a data structure that can be used for path finding
-  gridGraphRef.current = buildGridGraph(cellsByHex, grid2d, heightMapConfig.maxHeightNeighborToCenter);
+  gridGraphRef.current = buildGridGraph(cellsByHex, grid2d, gridConfig.maxHeightNeighborToCenter);
+  pathFinder.current = setupPathFinding(gridGraphRef.current);
 
 
   // filter out any islands - areas that cannot be reached from the rest of the grid
-  if (heightMapConfig.noCellIslands) filterOutCellIslands(cellsByHex, gridGraphRef.current);
+  if (gridConfig.noCellIslands) filterOutCellIslands(cellsByHex, gridGraphRef.current);
 
+  /*console.log(JSON.stringify(Array.from(idByCenterIntersection.entries())));*/
 
   // use the 3d points to build cell meshes
   instancedMeshGridRef.current = createCellInstances(cellsByHex, scene);
   planeConfig.visible = false;
-
-  await finder.setupPathFinding(gridGraphRef.current);
-
 
   // actual meshes
   mergedGridMesh.current = createHexGridMeshFromHeightField(scene, cellsByHex);

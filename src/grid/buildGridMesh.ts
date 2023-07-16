@@ -9,9 +9,9 @@ import {
   Object3D,
   Vector3
 } from "three";
-import {heightMapConfig, renderOptions} from "../HexGrid";
+import {gridConfig, renderOptions} from "../HexGrid";
 import {CornersByCenterByHex, idByCenterIntersection} from "./buildGridDataStructure";
-import {idByFaceIndex, sharedCellDefaultMaterial} from "./globals";
+import {idByFaceIndex, defaultCellMaterial} from "./globals";
 import {mergeBufferGeometries} from "three-stdlib";
 
 /*
@@ -36,11 +36,16 @@ export function createHexGridMeshFromHeightField(scene: Object3D, cellsByHex: Co
     for (const [centerIntersection, cornerIntersections] of cells) {
       // if an intersection did not get an id when we build the grid graph, we will not create a mesh for it
       if (!idByCenterIntersection.has(centerIntersection)) {
-        console.error("no id for center intersection", centerIntersection);
-        continue; // this shouldn't happen anymore, that's why we throw an error
+        console.error(centerIntersection);
+        // this shouldn't happen anymore, that's why we throw an error
+        throw "no id for center intersection";
       }
       const bufferGeometry = createBufferGeometryFromIntersections(cornerIntersections, centerIntersection);
       geometries.push(bufferGeometry);
+
+      // TODO: here we store the normals
+
+
       // we link of each the geometry faces to the cell id
       const id = idByCenterIntersection.get(centerIntersection)!;
       for (let i = 0; i < numFacesPerCell; i++) {
@@ -50,18 +55,18 @@ export function createHexGridMeshFromHeightField(scene: Object3D, cellsByHex: Co
     }
   }
 
+
   const resultGeometry = mergeBufferGeometries(geometries);
   if (!resultGeometry) {
     throw "failed to build grid geometry";
   }
   // does not have to be added to the scene tree to perform raycasts on it
-  const gridMesh = new Mesh(resultGeometry, sharedCellDefaultMaterial);
-
-  // TODO: include grid gap parameter into merged mesh (probably by making the individual geometry a bit larger)
-  // scene.add(gridMesh);
-  // Using the bvh for raycasting leads to totally unexpected behaviour
+  const gridMesh = new Mesh(resultGeometry, defaultCellMaterial);
+  if (renderOptions.displayMergedGrid) {
+    scene.add(gridMesh);
+  }
+  // Using the bvh for raycasting leads to totally unexpected behaviour<
   //gridMesh.geometry.computeBoundsTree(); // compute bvh for merged geometry
-
   return gridMesh;
 }
 
@@ -77,7 +82,9 @@ export function createBufferGeometryFromIntersections(corners: Intersection[], c
       point.x, /*point.x - center.point.x,*/
       point.y, /*point.y - center.point.y,*/
       point.z, /*point.z - center.point.z*/
-    ).multiplyScalar(heightMapConfig.cellGapFactor).add(normal.clone().multiplyScalar(heightMapConfig.zFightOffset));
+      // we're not multiplying the gap factor into the merged grid, because we don't want any gaps
+    )/*.multiplyScalar(heightMapConfig.cellGapFactor)*/
+      .add(normal.clone().multiplyScalar(gridConfig.zFightOffset));
 
   //const point0 = new Vector3().addVectors(corners[0].point, new Vector3(...center.face!.normal.toArray()).multiplyScalar(0.1));
   const point0 = transformPos(corners[0].point, corners[0].face!.normal);
@@ -114,6 +121,9 @@ export function createBufferGeometryFromIntersections(corners: Intersection[], c
   const positions = new Float32Array(vertices.flatMap((vertex) => [vertex.pos.x, vertex.pos.y, vertex.pos.z]));
   const normals = new Float32Array(vertices.flatMap((vertex) => [vertex.normal.x, vertex.normal.y, vertex.normal.z]));
   const colors = new Float32Array(vertices.flatMap((vertex) => [vertex.color[0], vertex.color[1], vertex.color[2], vertex.color[3]]));
+
+  const heightOffsets = new Float32Array(vertices.map((vertex) => vertex.pos.z));
+
   bufferGeometry.setAttribute('position', new BufferAttribute(positions, 3));
   bufferGeometry.setAttribute('normal', new BufferAttribute(normals, 3));
   bufferGeometry.setAttribute('color', new BufferAttribute(colors, 4));

@@ -110,9 +110,13 @@ export const Model = forwardRef(function Model(props: JSX.IntrinsicElements['gro
         </group>
         <group position={[21.32, 7.96, -25.83]} rotation={[1.56, -1.57, 1.56]}>
           <group position={[0.13, 0.22, -0.06]} rotation={[0.6, 0, -0.32]} scale={[1.95, 1.03, 0.88]}>
-            <mesh castShadow receiveShadow geometry={nodes.godrays.geometry}
+            {
+              /*
+                <mesh castShadow receiveShadow geometry={nodes.godrays.geometry}
                   material={materials.M_FX_gradient_linear_dungeon} position={[0, 0, 5.84]}
                   rotation={[-Math.PI, 0, -Math.PI]} scale={[0.13, 1.72, 1.19]}/>
+               */
+            }
           </group>
         </group>
         <group position={[0, 1, -2]} rotation={[0, -1.57, 0]}>

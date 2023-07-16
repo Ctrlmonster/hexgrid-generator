@@ -2,21 +2,23 @@ import {useEffect} from "react";
 import {useThree} from "@react-three/fiber";
 import {computeColorGradient, resetPathfinding} from "../grid/functions";
 import {
-  cellMeshes,
-  finder,
-  instancedMeshGridRef, pathInstances,
-  pathMeshes,
+  cellColorValues,
+  defaultCellMaterial,
+  derivedCellMaterial,
+  idByFaceIndex,
+  instancedMeshGridRef,
   mergedGridMesh,
+  pathFinder,
+  pathInstances,
   startCellIdRef,
-  targetCellIdRef, idByFaceIndex
+  targetCellIdRef
 } from "../grid/globals";
 import {renderOptions} from "../HexGrid";
 import {Color} from "three";
 
 
-
 const cellColor = new Color();
-export const cellColorValues: number[] = [];
+// these are values for the instances
 
 let waitingForPath = false;
 
@@ -24,15 +26,13 @@ let waitingForPath = false;
 export default function GridRenderer() {
   const raycaster = useThree(({raycaster}) => raycaster);
 
-  // TODO: for path finding we need to link each face contained in a cell to the cell
-
   useEffect(() => {
     // right click to halt pathfinding - path will be deleted if clicked outside the grid
     const onContextMenu = () => {
       if (!mergedGridMesh.current) return;
       const intersects = raycaster.intersectObject(mergedGridMesh.current!);
-      if (intersects.length) resetPathfinding(true);
-      else resetPathfinding(false);
+      if (intersects.length) resetPathfinding();
+      else resetPathfinding();
     }
     window.addEventListener('contextmenu', onContextMenu);
     // -----------------------------------------------------------------------------
@@ -60,16 +60,13 @@ export default function GridRenderer() {
       const intersects = raycaster.intersectObject(mergedGridMesh.current!);
       const [intersection] = intersects;
       if (!intersection) return;
+
       targetCellIdRef.current = idByFaceIndex.get(intersection.faceIndex);
-
-
-      waitingForPath = true;
-      const path = await finder.findPath(startCellIdRef.current, targetCellIdRef.current!);
-      waitingForPath = false;
+      const path = pathFinder.current.find(startCellIdRef.current, targetCellIdRef.current!).map((cell) => cell.data.id);
 
       // first reset all colors
       pathInstances.forEach(idx => {
-        cellColorValues[idx] = 0xffffff;
+        cellColorValues[idx] = defaultCellMaterial.color.getHex(); //?? 0xffffff;
       });
       // then get the new instances
       pathInstances.clear();
@@ -81,6 +78,11 @@ export default function GridRenderer() {
       });
       cellColorValues.forEach((v, i) => {
         instancedMeshGridRef.current!.setUniformAt("diffuse", i, cellColor.set(v));
+        if (pathInstances.has(i)) {
+          instancedMeshGridRef.current!.setUniformAt("opacity", i, renderOptions.pathRenderOpacity);
+        } else {
+          instancedMeshGridRef.current!.setUniformAt("opacity", i, renderOptions.cellRenderOpacity);
+        }
       });
     }
     // hover over a cell to select it as target cell for path finding

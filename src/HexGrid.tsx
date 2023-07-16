@@ -1,43 +1,48 @@
-import {Orientation} from 'honeycomb-grid'
-import {Html, TransformControls} from "@react-three/drei";
+import {Grid, Hex, Orientation} from 'honeycomb-grid'
+import {Html, Instance, Instances, TransformControls} from "@react-three/drei";
 import {proxy, useSnapshot} from 'valtio';
-import {
-  Color, DepthModes,
-  DoubleSide,
-  FrontSide,
-  Group,
-  Mesh, MeshBasicMaterial,
-  MeshPhongMaterial,
-  MeshStandardMaterial,
-  Object3D,
-  Vector3
-} from "three";
-import {useEffect, useRef, useState} from "react";
+import {DoubleSide, FrontSide, InstancedMesh, Mesh, Vector3} from "three";
+import {MutableRefObject, useEffect, useLayoutEffect, useMemo, useRef} from "react";
 import {folder, useControls} from "leva";
-import {CELL_COLOR, CELL_COLOR_HIGHLIGHTED, sharedCellDefaultMaterial, sharedCellPathMaterial} from "./grid/globals";
+import {
+  CELL_COLOR, cellColorValues,
+  defaultCellMaterial,
+  derivedCellMaterial,
+  instancedMeshGridRef,
+  mergedGridMesh, pathInstances,
+  sceneRef
+} from "./grid/globals";
+import {createGrid2d} from "./grid/buildGridDataStructure";
+import {useFrame} from "@react-three/fiber";
 
 
 /*
 
 TODO: Ordered list of things to do
   Must have:
+  * Figure out how you're going to draw the grid in game! (idea: take the
+  merged grid mesh and give it a transparent material that has only the grid
+  lines on it, then play with the depth buffer settings to make occlusion work well.
+  Then we can draw cell instances with alpha and color depending on the game state)
+  * Add button to export structure which can be used to setup path finding
+  * Add polygon offset values to leva controls
+  * Prepare bezier curves for path between cells
   * Fix holes in generated Grid (solved?)
-  * Remove cell islands (fix raycasting first to debug properly)
-  * Smooth cell normals
+  * Smooth cell normals (idea for how to do this: Track all normals of a vertex
+  for each triangle in participates in. At the end we can interpolate all of them.)
   * Tweak obstacle bombing parameters (when a cell counts as blocked)
+  * Optimize neighbor obstacle checking (i.e. don' check a pair twice)
+  * Create vertex shader dependent on hex origin (pointy vs flat)
   -------------------------------------------
   Nice to have:
-  * Add Button for switching between instances/real meshes
+  * add functionality to delete cells from grid
+  * add option to draw cells on environment (prob needs complete rewrite)
+  * Increase leva ui width and rename parameters
   * display size of grid in stats
-  * add 2d grid version to the creator plane
+  * fix 2d grid version to the creator plane
   * add info about number of geometries in stats
  */
 
-// ----------------------------------------------
-// global structures that are shared between modules
-
-// TODO: prob. rename file to creator plane
-// ----------------------------------------------
 
 // grid creation parameters
 const RAY_CAST_START_HEIGHT = 30;
@@ -46,17 +51,19 @@ const GRID_ROWS = 30;
 const OFFSET_X = -30;
 const OFFSET_Z = -30;
 const FIRST_HIT_ONLY = false;
-const Z_FIGHT_OFFSET = .01;
+const Z_FIGHT_OFFSET = .5;
 const CELL_RADIUS = 1.5;
 const CELL_ORIENTATION = Orientation.POINTY as Orientation;
 const MAX_HEIGHT_CENTER_TO_CORNERS = 1.0;
-const MAX_HEIGHT_NEIGHBOR_TO_CENTER = 2.0;
+const MAX_HEIGHT_NEIGHBOR_TO_CENTER = 1.3;
 const MIN_HEIGHT_DIFF_STACKED_CELLS = 5.0;
 const RAY_CAST_Y_DIRECTION = -1;
 
-const INNER_CELL_RADIUS_FACTOR = 0.88;
-const CENTER_ADAPTION_OBSTACLE_FACTOR = 0.63;
-const NEIGHBOR_STRIP_SIZE_FACTOR = 0.5;
+const INNER_CELL_RADIUS_FACTOR = 0.79;
+const CENTER_ADAPTION_OBSTACLE_FACTOR = 0.54;
+const NEIGHBOR_STRIP_WIDTH_FACTOR = 0.5;
+const NEIGHBOR_STRIP_LEN_FACTOR = 0.5;
+const NEIGHBOR_STRIP_INTERSECTION_TOLERANCE = 0.05;
 const MERGE_STACKED_CORNERS = true;
 const PRINT_GEOMETRY_HOLE_WARNINGS = false;
 const CHECK_FOR_OBSTACLES = true;
@@ -74,14 +81,21 @@ const OBSTACLE_NEIGHBOR_RAY_START_HEIGHT = 1.5;
 // --------------------------------------------------------------------------
 
 // rendering parameters
+const DISPLAY_MERGED_GRID = false;
+const DISPLAY_CELL_INSTANCES = true;
 const DOUBLE_SIDED_CELL_MATERIALS = true;
 const RENDER_ENV_AS_WIRE_FRAME = false;
 const RENDER_CELLS_AS_WIRE_FRAME = false;
-const CELL_RENDER_OPACITY = 1;
+const CELL_RENDER_OPACITY = 0.5;
+const PATH_RENDER_OPACITY = CELL_RENDER_OPACITY;
 const DEBUG_NEIGHBOR_INTERSECTIONS = false;
 const DEBUG_CENTER_INTERSECTIONS = false;
 const DISPLAY_PATHFINDING = true;
-const CELL_GAP_FACTOR = 1;
+const CELL_GAP_FACTOR = 0.97;
+
+const ENABLE_POLYGON_OFFSET = true;
+const POLYGON_OFFSET_FACTOR = -5;
+const POLYGON_OFFSET_UNITS = -200;
 
 // --------------------------------------------------------------------------
 
@@ -107,7 +121,7 @@ const startZ = startHeight / 2 + OFFSET_Z - CELL_RADIUS * 1.5;
 
 // create an object that can be used to update the height map data
 // this object will be used when creating the height map
-export const heightMapConfig = proxy({
+export const gridConfig = proxy({
   cellRadius: CELL_RADIUS,
   gridRows: GRID_ROWS,
   gridCols: GRID_COLS,
@@ -134,52 +148,97 @@ export const heightMapConfig = proxy({
   innerCellRadiusFactor: INNER_CELL_RADIUS_FACTOR,
   printGeometryHoleWarnings: PRINT_GEOMETRY_HOLE_WARNINGS,
   centerAdaptionObstacleFactor: CENTER_ADAPTION_OBSTACLE_FACTOR,
-  neighborStripSizeFactor: NEIGHBOR_STRIP_SIZE_FACTOR,
+  neighborStripWidthFactor: NEIGHBOR_STRIP_WIDTH_FACTOR,
+  neighborStripLenFactor: NEIGHBOR_STRIP_LEN_FACTOR,
+  neighborStripIntersectionTolerance: NEIGHBOR_STRIP_INTERSECTION_TOLERANCE,
   minHeightDiffStackedCorners: MIN_HEIGHT_DIFF_STACKED_CORNERS,
   mergeStackedCorners: MERGE_STACKED_CORNERS,
+  debugNeighborIntersections: DEBUG_NEIGHBOR_INTERSECTIONS,
+  debugCenterIntersections: DEBUG_CENTER_INTERSECTIONS,
 });
 
+
 function updateRadiusDependentValues(position: Vector3) {
-  heightMapConfig.gridCols = calcColsFromWidth(heightMapConfig.width, heightMapConfig.cellRadius);
-  heightMapConfig.gridRows = calcRowsFromHeight(heightMapConfig.height, heightMapConfig.cellRadius);
-  heightMapConfig.offsetX = calcOffSetX(heightMapConfig.width, position.x, heightMapConfig.cellRadius);
-  heightMapConfig.offsetZ = calcOffSetZ(heightMapConfig.height, position.z, heightMapConfig.cellRadius);
+  gridConfig.gridCols = calcColsFromWidth(gridConfig.width, gridConfig.cellRadius);
+  gridConfig.gridRows = calcRowsFromHeight(gridConfig.height, gridConfig.cellRadius);
+  gridConfig.offsetX = calcOffSetX(gridConfig.width, position.x, gridConfig.cellRadius);
+  gridConfig.offsetZ = calcOffSetZ(gridConfig.height, position.z, gridConfig.cellRadius);
 }
 
 function updateHeightMapDataFromControls(scale: Vector3, position: Vector3) {
-  heightMapConfig.width = startWidth * scale.x;
-  heightMapConfig.height = startHeight * scale.z;
+  gridConfig.width = startWidth * scale.x;
+  gridConfig.height = startHeight * scale.z;
   updateRadiusDependentValues(position);
-  heightMapConfig.rayStartHeight = position.y + RAY_CAST_Y_DIRECTION * 2; // TODO: instead exclude the creator plane from raycasting
+  gridConfig.rayStartHeight = position.y + RAY_CAST_Y_DIRECTION * 2; // TODO: instead exclude the creator plane from raycasting
 }
 
 // @ts-ignore
-window.heightMapConfig = heightMapConfig;
+window.heightMapConfig = gridConfig;
 
 
 export const renderOptions = proxy({
+  displayMergedGrid: DISPLAY_MERGED_GRID,
+  displayCellInstances: DISPLAY_CELL_INSTANCES,
   doubleSidedCellMaterials: DOUBLE_SIDED_CELL_MATERIALS,
   renderEnvAsWireFrame: RENDER_ENV_AS_WIRE_FRAME,
   renderCellsAsWireFrame: RENDER_CELLS_AS_WIRE_FRAME,
   cellRenderOpacity: CELL_RENDER_OPACITY,
+  pathRenderOpacity: PATH_RENDER_OPACITY,
   cellColor: CELL_COLOR,
-  cellColorHighlighted: CELL_COLOR_HIGHLIGHTED,
-  debugNeighbourIntersections: DEBUG_NEIGHBOR_INTERSECTIONS,
-  debugCenterIntersections: DEBUG_CENTER_INTERSECTIONS,
   displayPathFinding: DISPLAY_PATHFINDING,
+  polygonOffset: ENABLE_POLYGON_OFFSET,
+  polygonOffsetFactor: POLYGON_OFFSET_FACTOR,
+  polygonOffsetUnits: POLYGON_OFFSET_UNITS,
 });
 
 function updateGridStyle() {
-  sharedCellDefaultMaterial.side = renderOptions.doubleSidedCellMaterials ? DoubleSide : FrontSide;
-  //sharedCellDefaultMaterial.wireframe = renderOptions.renderCellsAsWireFrame;
-  //sharedCellDefaultMaterial.opacity = renderOptions.cellRenderOpacity;
-  //sharedCellDefaultMaterial.color.set(renderOptions.cellColor);
-  //sharedCellDefaultMaterial.needsUpdate = true;
+  if (sceneRef.current && instancedMeshGridRef.current) {
+    if (renderOptions.displayCellInstances) {
+      const res = sceneRef.current.getObjectById(instancedMeshGridRef.current.id)
+      if (res == undefined) sceneRef.current.add(instancedMeshGridRef.current!)
+    } else {
+      sceneRef.current.remove(instancedMeshGridRef.current!)
+    }
+  }
+  if (sceneRef.current && mergedGridMesh.current) {
+    if (renderOptions.displayMergedGrid) {
+      const res = sceneRef.current.getObjectById(mergedGridMesh.current.id)
+      if (res == undefined) sceneRef.current.add(mergedGridMesh.current)
+    } else {
+      sceneRef.current.remove(mergedGridMesh.current);
+    }
+  }
 
-  sharedCellPathMaterial.side = renderOptions.doubleSidedCellMaterials ? DoubleSide : FrontSide;
-  //sharedCellPathMaterial.opacity = renderOptions.cellRenderOpacity;
-  //sharedCellPathMaterial.color.set(renderOptions.cellColorHighlighted);
-  //sharedCellPathMaterial.needsUpdate = true;
+  defaultCellMaterial.side = renderOptions.doubleSidedCellMaterials ? DoubleSide : FrontSide;
+  defaultCellMaterial.wireframe = renderOptions.renderCellsAsWireFrame;
+  defaultCellMaterial.opacity = renderOptions.cellRenderOpacity;
+  defaultCellMaterial.color.set(renderOptions.cellColor);
+  defaultCellMaterial.polygonOffset = renderOptions.polygonOffset;
+  defaultCellMaterial.polygonOffsetFactor = renderOptions.polygonOffsetFactor;
+  defaultCellMaterial.polygonOffsetUnits = renderOptions.polygonOffsetUnits;
+  defaultCellMaterial.needsUpdate = true;
+
+  if (derivedCellMaterial.current) {
+    derivedCellMaterial.current.side = defaultCellMaterial.side;
+    derivedCellMaterial.current.wireframe = defaultCellMaterial.wireframe;
+    derivedCellMaterial.current.opacity = defaultCellMaterial.opacity;
+    derivedCellMaterial.current.color.set(defaultCellMaterial.color);
+    derivedCellMaterial.current.polygonOffset = defaultCellMaterial.polygonOffset;
+    derivedCellMaterial.current.polygonOffsetFactor = defaultCellMaterial.polygonOffsetFactor;
+    derivedCellMaterial.current.polygonOffsetUnits = defaultCellMaterial.polygonOffsetUnits;
+    derivedCellMaterial.current.needsUpdate = true;
+  }
+
+  for (let i = 0; i < cellColorValues.length; i++) {
+    cellColorValues[i] = defaultCellMaterial.color.getHex();
+    //instancedMeshGridRef.current?.setUniformAt("opacity", i, defaultCellMaterial.opacity);
+
+    if (pathInstances.has(i)) {
+      instancedMeshGridRef.current!.setUniformAt("opacity", i, renderOptions.pathRenderOpacity);
+    } else {
+      instancedMeshGridRef.current!.setUniformAt("opacity", i, renderOptions.cellRenderOpacity);
+    }
+  }
 }
 
 
@@ -188,6 +247,13 @@ export function CreatorPlane() {
   const controlsRef = useRef<any>(null!);
 
   const renderConfig: typeof renderOptions = useControls("Rendering", {
+    displayMergedGrid: {label: "Merged Grid", value: DISPLAY_MERGED_GRID},
+    displayCellInstances: {label: "Cell Instances", value: DISPLAY_CELL_INSTANCES},
+
+    polygonOffset: {label: "Polygon Offset", value: ENABLE_POLYGON_OFFSET},
+    polygonOffsetFactor: {label: "Offset Factor", value: POLYGON_OFFSET_FACTOR, min: -1000, max: 1000},
+    polygonOffsetUnits: {label: "Offset Units", value: POLYGON_OFFSET_UNITS, min: -50000, max: 50000},
+
     doubleSidedCellMaterials: {
       label: "Double Sided", value: DOUBLE_SIDED_CELL_MATERIALS,
       hint: "Sets the material.side property of the cell material to THREE.DoubleSide."
@@ -197,14 +263,11 @@ export function CreatorPlane() {
       hint: "Set the material.wireframe property of the environment materials to true."
     },
     renderCellsAsWireFrame: {label: "Grid Wireframe", value: RENDER_CELLS_AS_WIRE_FRAME},
-    cellRenderOpacity: {label: "Cell Opacity", value: CELL_RENDER_OPACITY},
+    cellRenderOpacity: {label: "Cell Opacity", value: CELL_RENDER_OPACITY, min: 0, max: 1},
+    pathRenderOpacity: {label: "Path Opacity", value: PATH_RENDER_OPACITY, min: 0, max: 1},
     cellColor: {label: "Cell Color", value: CELL_COLOR},
-    cellColorHighlighted: {label: "Cell Color Highlighted", value: CELL_COLOR_HIGHLIGHTED},
-    debugNeighbourIntersections: {label: "Debug Neighbour Intersections", value: DEBUG_NEIGHBOR_INTERSECTIONS},
-    debugCenterIntersections: {label: "Debug Center Intersections", value: DEBUG_CENTER_INTERSECTIONS},
     displayPathFinding: {label: "Display Path Finding", value: DISPLAY_PATHFINDING},
   }, {collapsed: true});
-
 
   useEffect(() => {
     Object.assign(renderOptions, renderConfig);
@@ -212,7 +275,7 @@ export function CreatorPlane() {
   }, [renderConfig]);
 
 
-  const ctrls: Partial<typeof heightMapConfig> = useControls("Grid Creation", {
+  const ctrls: Partial<typeof gridConfig> = useControls("Grid Creation", {
     misc: folder({
       noCellIslands: {
         label: "No Islands",
@@ -290,13 +353,13 @@ export function CreatorPlane() {
 
     obstacleChecking: folder({
       checkForObstacles: {
-        label: "Check for Obstacles",
+        label: "Center Obstacles",
         value: CHECK_FOR_OBSTACLES,
         hint: "If true, the algorithm will check for obstacles in the environment and won't create cells that intersect " +
           "with obstacles."
       },
       checkForObstaclesBetweenCells: {
-        label: "Check for Obstacles Between Cells",
+        label: "Neighb Obstacles",
         value: CHECK_FOR_OBSTACLES_BETWEEN_CELLS,
         hint: "If true, the algorithm will check for obstacles in the environment between two cells and won't create " +
           "a connection between the two, that can be used for path finding."
@@ -341,31 +404,42 @@ export function CreatorPlane() {
           "needs from all obstacle intersection to be considered non-blocked. Make this value smaller to be more " +
           "lenient towards obstacles. 1 means any obstacle intersection inside the cell will mark it as blocked."
       },
-      neighborStripSizeFactor: {
+      neighborStripWidthFactor: {
         max: 1,
         min: 0.1,
-        value: NEIGHBOR_STRIP_SIZE_FACTOR,
-        label: "N.Strip Factor",
+        value: NEIGHBOR_STRIP_WIDTH_FACTOR,
+        label: "N.Width Factor",
         hint: "This value determines how big the strip connecting two cells is. This strip must be free of obstacles" +
           "to make two cells neighbors. Decrease this value to make it easier for two cells to be neighbors."
-      }
-    }, {collapsed: true}),
+      },
+      neighborStripLenFactor: {
+        max: 1,
+        min: 0,
+        value: NEIGHBOR_STRIP_LEN_FACTOR,
+        label: "N.Length Factor",
+        hint: "This value determines how long the strip connecting two cells is. This strip must be free of obstacles" +
+          "to make two cells neighbors. Decrease this value to make it easier for two cells to be neighbors."
+      },
+      neighborStripIntersectionTolerance: {
+        max: 1,
+        min: 0,
+        step: 0.01,
+        value: NEIGHBOR_STRIP_INTERSECTION_TOLERANCE,
+        label: "N.Tolerance",
+        hint: "The percentage of intersections that must be blocked to consider a neighbor strip blocked. The minimum" +
+          "will be 1 intersection. The maximum will be all intersections. " +
+          "Decrease this value to make it easier for two cells to be neighbors."
+      },
+      debugNeighborIntersections: {label: "Debug Neighbour Intersections", value: DEBUG_NEIGHBOR_INTERSECTIONS},
+      debugCenterIntersections: {label: "Debug Center Intersections", value: DEBUG_CENTER_INTERSECTIONS},
+    }, {collapsed: false}),
 
-  }, {collapsed: true});
+  }, {collapsed: false});
 
   useEffect(() => {
-    Object.assign(heightMapConfig, ctrls);
+    Object.assign(gridConfig, ctrls);
   }, [ctrls])
 
-
-  /*
-  const heightMapSnap = useSnapshot(heightMapConfig);
-  useEffect(() => {
-    // these are the values updated by the TransformControls
-    // let's see if we can write into leva as well
-    console.log(`width: ${heightMapSnap.width}, height: ${heightMapSnap.height}, offsetX: ${heightMapSnap.offsetX}, offsetZ: ${heightMapSnap.offsetZ}`);
-  }, [heightMapSnap.width, heightMapSnap.height, heightMapSnap.offsetX, heightMapSnap.offsetZ]);
-  */
 
   useEffect(() => {
     if (!controlsRef.current?.object) return;
@@ -373,44 +447,112 @@ export function CreatorPlane() {
   }, [ctrls.cellRadius]);
 
 
-  return (
-    // @ts-ignore
-    <TransformControls
-      visible={planeSnap.visible}
-      size={planeSnap.visible ? 1 : 0.5}
-      ref={controlsRef}
-      onChange={() => {
-        if (!controlsRef.current?.object) return;
-        updateHeightMapDataFromControls(controlsRef.current.object.scale, controlsRef.current.object.position);
-      }}
-      mode={planeSnap.mode}
-      position={[startX, RAY_CAST_START_HEIGHT + 5, startZ]}>
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        onDoubleClick={() => {
-          planeConfig.mode = modes[(modes.indexOf(planeConfig.mode) + 1) % modes.length];
-          planeConfig.color = planeColor[(planeColor.indexOf(planeConfig.color) + 1) % planeColor.length];
-        }}>
-        <planeGeometry args={[startWidth, startHeight]}/>
-        <meshBasicMaterial side={DoubleSide} color={planeSnap.color} opacity={0.5} transparent={true}/>
+  const planeRef = useRef<Mesh>(null!);
 
-        <Html className={"relative"}>
-          <div className={"interaction-button text-outline bg-transparent " +
-            "text-white font-bold hover:cursor-pointer hover:text-orange-400 " +
-            "absolute left-11 bottom-11"}
-               style={{textTransform: "capitalize"}}
-               onClick={() => planeConfig.visible = !planeConfig.visible}
-          >
-            {planeSnap.visible ? "Hide" : "Show"}({planeSnap.mode})
-          </div>
-        </Html>
-      </mesh>
-    </TransformControls>
+  return (
+    <>
+      {/* @ts-ignore */}
+      <TransformControls
+        visible={planeSnap.visible}
+        size={planeSnap.visible ? 1 : 0.5}
+        ref={controlsRef}
+        onChange={() => {
+          if (!controlsRef.current?.object) return;
+          updateHeightMapDataFromControls(controlsRef.current.object.scale, controlsRef.current.object.position);
+        }}
+        mode={planeSnap.mode}
+        position={[startX, RAY_CAST_START_HEIGHT + 5, startZ]}>
+        <mesh
+          ref={planeRef}
+          rotation={[-Math.PI / 2, 0, 0]}
+          onDoubleClick={() => {
+            planeConfig.mode = modes[(modes.indexOf(planeConfig.mode) + 1) % modes.length];
+            planeConfig.color = planeColor[(planeColor.indexOf(planeConfig.color) + 1) % planeColor.length];
+          }}>
+          <planeGeometry args={[startWidth, startHeight]}/>
+          <meshBasicMaterial side={DoubleSide} color={planeSnap.color} opacity={0} transparent={true}/>
+
+          <Html className={"relative"}>
+            <div className={"interaction-button text-outline bg-transparent " +
+              "text-white font-bold hover:cursor-pointer hover:text-orange-400 " +
+              "absolute left-11 bottom-11"}
+                 style={{textTransform: "capitalize"}}
+                 onClick={() => planeConfig.visible = !planeConfig.visible}
+            >
+              {planeSnap.visible ? "Hide" : "Show"}({planeSnap.mode})
+            </div>
+          </Html>
+
+
+        </mesh>
+      </TransformControls>
+
+
+      <GridPreview controlsRef={controlsRef}/>
+
+    </>
   )
 }
 
 
 // ===============================================================================================
+
+
+const THETA_START = Math.PI / 2;
+
+function GridPreview({controlsRef}: { controlsRef: MutableRefObject<any> }) {
+
+  const gridSnap = useSnapshot(gridConfig);
+  const planeSnap = useSnapshot(planeConfig);
+
+  useLayoutEffect(() => {
+    console.log("Plane updated");
+  }, [planeSnap]);
+
+  useEffect(() => {
+    // check if it's in scale mode
+    if (controlsRef.current.mode === "scale") {
+      console.log("updating grid");
+      grid.current = createGrid2d(gridSnap);
+    }
+    if (orientation.current !== gridSnap.cellOrientation) {
+      console.log("updating grid orientation");
+      grid.current = createGrid2d(gridSnap);
+      orientation.current = gridSnap.cellOrientation;
+      thetaStart.current = orientation.current === Orientation.POINTY ? THETA_START : Math.PI / 3;
+    }
+  }, [gridSnap]);
+
+  useFrame(() => {
+    // we're copying the position manually, because we don't want to inherit the scale
+    const position = controlsRef.current?.object.position;
+    instancesRef.current?.position.set(position!.x, position!.y + 0.01, position!.z);
+  });
+
+
+  //const grid = useMemo(() => createGrid2d(gridSnap), [planeSnap]);
+  const grid = useRef(createGrid2d(gridSnap));
+  const orientation = useRef(gridSnap.cellOrientation);
+  const instancesRef = useRef<InstancedMesh>(null!);
+  const thetaStart = useRef(orientation.current === Orientation.POINTY ? THETA_START : Math.PI / 3);
+
+  return (
+    // @ts-ignore
+    <Instances ref={instancesRef} position={[0, 0.01, 0]} limit={5000}>
+      <circleGeometry args={[CELL_RADIUS, 6, thetaStart.current]}/>
+      <meshBasicMaterial side={DoubleSide} transparent={true} opacity={0.35}/>
+      {grid.current.toArray().map((hex, i) =>
+        // @ts-ignore
+        <Instance
+          key={i}
+          scale={.95}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[hex.x, 0, hex.y]}/>
+      )}
+    </Instances>
+  )
+}
+
 
 // different ways of rendering grid - keep as reference for now
 
@@ -418,49 +560,49 @@ export function CreatorPlane() {
 
 
 export function createDemoHex(): Point[] {
-  const points = [];
-  for (let i = 0; i < (Math.PI * 2 - 0.001); i += Math.PI / 3) {
-    const x = Math.cos(i);
-    const y = Math.sin(i);
-    const point = {x, y};
-    points.push(point);
-    console.log(`current angle in degree: ${i * 180 / Math.PI}, in radian: ${Math.PI * 2 - i}`);
-  }
-  return points;
+const points = [];
+for (let i = 0; i < (Math.PI * 2 - 0.001); i += Math.PI / 3) {
+const x = Math.cos(i);
+const y = Math.sin(i);
+const point = {x, y};
+points.push(point);
+console.log(`current angle in degree: ${i * 180 / Math.PI}, in radian: ${Math.PI * 2 - i}`);
+}
+return points;
 }
 
-export function HexGridFromPoints({points}: { points: Vector3[] }) {
-  return (
-    <Instances limit={points.length} rotation={[-Math.PI / 2, 0, 0]}>
-      <boxGeometry/>
-      <meshBasicMaterial/>
-      {points.map((point, i) =>
-        <Instance
-          key={i}
-          color="black"
-          scale={.1}
-          position={[point.x, point.y, 0]}
-        />
-      )}
-    </Instances>
-  )
+export function HexGridFromPoints({points}: {points: Vector3[]}) {
+return (
+<Instances limit={points.length} rotation={[-Math.PI / 2, 0, 0]}>
+<boxGeometry/>
+<meshBasicMaterial/>
+{points.map((point, i) =>
+<Instance
+key={i}
+color="black"
+scale={.1}
+position={[point.x, point.y, 0]}
+/>
+)}
+</Instances>
+)
 }
 
 export function HexGrid() {
-  return (
-    <Instances rotation={[-Math.PI / 2, 0, 0]}>
-      <circleGeometry args={[CELL_RADIUS, 6, THETA_START]}/>
-      <meshBasicMaterial/>
-      {grid.toArray().map((hex, i) =>
-        <Instance
-          key={i}
-          color="blue"
-          scale={.95}
-          position={[hex.x, hex.y, 0]}
-        />
-      )}
-    </Instances>
-  )
+return (
+<Instances rotation={[-Math.PI / 2, 0, 0]}>
+<circleGeometry args={[CELL_RADIUS, 6, THETA_START]}/>
+<meshBasicMaterial/>
+{grid.toArray().map((hex, i) =>
+<Instance
+key={i}
+color="blue"
+scale={.95}
+position={[hex.x, hex.y, 0]}
+/>
+)}
+</Instances>
+)
 }
 
 */

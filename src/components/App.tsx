@@ -3,19 +3,32 @@ import SceneContainer from "../SceneContainer";
 import {Leva, useControls} from "leva";
 import {exportGLTF} from "../helper/gltfExport";
 import {build3dGridWithPathfinding} from "../grid/functions";
-import {cellMeshes, mergedGridMesh, sceneRef} from "../grid/globals";
+import {mergedGridMesh, sceneRef} from "../grid/globals";
+import {useEffect} from "react";
 
 
 function App() {
   const {renderOnDemand} = useControls({
-    renderOnDemand: true
+    renderOnDemand: true,
   });
 
+
+  useEffect(() => {
+    console.log("zy");
+  }, []);
 
   return (
     <div className="AppContainer">
       <Leva/>
-      <Canvas style={{zIndex: 0}} frameloop={(renderOnDemand) ? "demand" : "always"} shadows={true}>
+      <Canvas style={{zIndex: 0}} dpr={1}
+              frameloop={(renderOnDemand) ? "demand" : "always"}
+              shadows={true}
+              gl={{
+                powerPreference: "high-performance",
+                antialias: false,
+                stencil: false,
+                depth: false
+              }}>
         <SceneContainer/>
       </Canvas>
 
